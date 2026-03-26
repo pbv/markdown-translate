@@ -27,7 +27,7 @@ Available options:
 ## Usage examples
 
 Using the commercial API endpoint; switch to
-`https://api.deepl.com/v2/translate` for the free one.
+`https://api-free.deepl.com/v2/translate` for the free one.
 
 ~~~bash
 $ export URL=https://api.deepl.com/v2/translate 
@@ -47,9 +47,10 @@ $ cabal build
 $ cabal install 
 ~~~
 
-NB: The dependencies will take roughly around 30 minutes to compile.
+NB: The dependencies will take a while to download and compile (around
+30 minutes in my laptop).
 
 
 ------
 
-Pedro Vasconcelos
+Pedro Vasconcelos, 2026
