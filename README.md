@@ -6,8 +6,6 @@ languages using Pandoc and the DeepL HTTP API.
 
 Tested with the V2 API and the free API endpoint.
 
-
-
 ## Usage
 
 ~~~
@@ -34,8 +32,10 @@ $ export URL=https://api.deepl.com/v2/translate
 $ export KEY=<insert your key here>
 $ markdown-translate -k $KEY -u $URL -s EN -t PT file1.md file2.md ...
     # Translate from English to Portuguese
-$ markdown-translate -k $KEY -u $URL -t FR file.md file1.md file2.md ...
+    # Writes outputs to file1_PT.md file2_PT.md ...
+$ markdown-translate -k $KEY -u $URL -t FR file1.md file2.md ...
     # Translate to French guessing the source language
+    # Writes outpyts to file1_FR.md file2_FR.md ...
 ~~~
 
 ## Instalation

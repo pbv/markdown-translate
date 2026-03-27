@@ -13,7 +13,7 @@ main :: IO ()
 main = execParser opts >>= runner
   where opts = info (helper <*> parseConfig)
                     (fullDesc <>
-                     header "Automatic translate Pandoc Markdown files using DeepL.")
+                     header "Automatically translate Pandoc Markdown files using DeepL.")
 
 runner :: Config -> IO ()
 runner config = mapM_ (translateFile config) (files config)

@@ -6,14 +6,18 @@ module Translate where
 
 import           Config
 import           Data.Aeson
+import           Data.Aeson.Types
 import           Data.Text (Text)
 import qualified Data.Text.Encoding as E
+import qualified Data.ByteString.Lazy as L
 import           Control.Concurrent (threadDelay)
-import           Control.Monad (mzero, when)
+import           Control.Monad (when)
+import           Control.Exception (throwIO)
 import           Text.Pandoc.Definition
 import qualified Text.Pandoc.Builder as P
 import           Text.Pandoc.Walk (walkM)
 import           Network.HTTP.Simple
+import           Network.HTTP.Types
 
 -- | Response types
 newtype TranslationResponse = TranslationResponse [Translation]
@@ -24,11 +28,11 @@ newtype Translation = Translation { translationText :: Text }
 
 instance FromJSON TranslationResponse where
   parseJSON (Object v)  = TranslationResponse <$> v .: "translations"
-  parseJSON _ = mzero
+  parseJSON other = typeMismatch "Object" other
 
 instance FromJSON Translation where
   parseJSON (Object v)  = Translation <$> v .: "text" 
-  parseJSON _ = mzero
+  parseJSON other = typeMismatch "Object" other
 
 -- | Main translation function
 translatePandoc :: Config -> Pandoc -> IO Pandoc
@@ -87,23 +91,26 @@ toText _         = Nothing
 
 
 -- | Send DeepL API request
--- implements an exponential backoff in case of errors
+-- implements an exponential backoff in case of too many requests
 sendTranslationRequest :: Config -> Text -> IO Text
-sendTranslationRequest conf text = go 10 
+sendTranslationRequest conf text = send 10 
   where
     request = prepareRequest conf text
-    go :: Int -> IO Text
-    go delay = do
-          response <- httpLBS request
-          case decode (getResponseBody response) of
-            Just (TranslationResponse (t:_)) -> return (translationText t)
-            _what -> do
-              when (conf.verbosity >= 2) $ do
-                putStrLn ("*** DeepL returned " ++ show _what)
-                putStrLn ("*** Retrying after " ++ show delay ++ "s")
-              threadDelay (delay * 1000000)
-              go (2*delay)
-              
+    send :: Int -> IO Text
+    send delay = httpLBS request >>= continue delay
+    continue :: Int -> Response L.ByteString -> IO Text
+    continue delay response 
+      | status == ok200
+      , Just (TranslationResponse (t:_)) <- decode (getResponseBody response)
+      = return (translationText t)
+      | status == tooManyRequests429 = do
+          when (conf.verbosity >= 2) $ do
+            putStrLn "*** DeepL returned TooManyRequests"
+            putStrLn ("*** Retrying after " ++ show delay ++ "s")
+          threadDelay (delay * 1000000)
+          send (2*delay)
+      | otherwise = throwIO $ userError (show status)
+      where status = getResponseStatus response 
 
 prepareRequest :: Config -> Text -> Request
 prepareRequest conf text =
