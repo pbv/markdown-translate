@@ -9,6 +9,7 @@ data Config
             , deeplAPIURL :: String
             , targetLang :: Text
             , sourceLang :: Maybe Text
+            , window :: Int
             , verbosity :: Int
             , files :: [FilePath]
             }
@@ -28,14 +29,20 @@ parseConfig =
   <*> strOption (long "targetLang"
                 <> short 't'
                 <> help "target language")
-  <*> (optional $ strOption (long "sourceLang"
+  <*> optional (strOption (long "sourceLang"
                 <> short 's'
                 <> help "source language"))
+  <*> option auto (long "window"
+                  <> help "context window length"
+                  <> short 'w'
+                  <> metavar "INT"
+                  <> value 5
+                  <> showDefault)
   <*> option auto (long "verbosity"
                   <> help "verbosity level"
                   <> short 'v'
                   <> metavar "INT"
-                  <> value 1                
+                  <> value 1
                   <> showDefault )
   <*> many (argument str (metavar "FILES"))
-      
+

@@ -18,16 +18,24 @@ import qualified Text.Pandoc.Builder as P
 import           Text.Pandoc.Walk (walkM)
 import           Network.HTTP.Simple
 import           Network.HTTP.Types
+import           Data.List (tails)
 
--- | Response types
-newtype TranslationResponse = TranslationResponse [Translation]
+-- | DeepL requests
+data DeepLRequest
+  = DeepLRequest { source :: Text
+                 , context :: Text
+                 }
+  deriving Show
+
+-- | DeepL Response types
+newtype DeepLResponse = DeepLResponse [Translation]
   deriving Show
 
 newtype Translation = Translation { translationText :: Text }
   deriving Show
 
-instance FromJSON TranslationResponse where
-  parseJSON (Object v)  = TranslationResponse <$> v .: "translations"
+instance FromJSON DeepLResponse where
+  parseJSON (Object v)  =  DeepLResponse <$> v .: "translations"
   parseJSON other = typeMismatch "Object" other
 
 instance FromJSON Translation where
@@ -48,25 +56,28 @@ data InlineChunk
   | Untranslatable Inline
   deriving Show
 
--- | Translates blocks of text while preserving others
+-- | Translates text inlines while preserving code, maths, etc.
 translateInlines :: Config -> [Inline] -> IO [Inline]
 translateInlines config inlines = do
-  translatedChunks <- mapM translateChunk (splitInlines inlines)
-  return $ P.toList $ mconcat translatedChunks
+  translated <- mapM translateChunks (joinChunks config.window $
+                                       splitInlines inlines)
+  return $ P.toList $ mconcat translated
   where
-    translateChunk :: InlineChunk -> IO P.Inlines
-    translateChunk (Untranslatable inline) = return (P.singleton inline)
-    translateChunk (Translatable txt) = do     
-      translated <- sendTranslationRequest config txt
-      return (P.text translated)
-      {-
-      -- work around DeepL bug that sometimes removes trailing spaces
-      let padr | not (T.null txt) && isSpace (T.last txt) = P.space
-               | otherwise = mempty
-      let padl | not (T.null txt) && isSpace (T.head txt) = P.space
-               | otherwise = mempty
-      return (padl <> P.text translated <> padr)
-      -}
+    translateChunks :: [InlineChunk] -> IO P.Inlines
+    translateChunks chunks
+      = case last chunks of
+          (Untranslatable inline) -> return (P.singleton inline)
+          (Translatable txt) -> do
+            let ctx = mconcat (map chunkText $ init chunks)
+            let req = DeepLRequest { source = txt, context = ctx }
+            when (config.verbosity>=3) $
+              print req
+            translated <- sendTranslationRequest config req
+            return (P.text translated)
+
+joinChunks :: Int -> [InlineChunk] -> [[InlineChunk]]
+joinChunks n chunks =
+  slidingWindow n (replicate (n-1) (Untranslatable Space) ++ chunks)
 
 -- | Splits inlines into chunks that should or should not be translated
 splitInlines :: [Inline] -> [InlineChunk]
@@ -74,9 +85,10 @@ splitInlines [] = []
 splitInlines (Str s:rest)
   = go rest s
   where
+    go :: [Inline] -> Text -> [InlineChunk]
     go [] acc = [Translatable acc]
     go (x:xs) acc
-      | Just s' <- toText x = go xs (acc<>s')
+      | Just s' <- toText x = go xs (acc <> s')
       | otherwise = Translatable acc : Untranslatable x : splitInlines xs
 splitInlines (x:xs) = Untranslatable x : splitInlines xs
 
@@ -88,20 +100,31 @@ toText SoftBreak = Just " "
 toText LineBreak = Just "\n"
 toText _         = Nothing
 
+chunkText :: InlineChunk -> Text
+chunkText (Translatable txt) = txt
+chunkText (Untranslatable _) = ""
+
+-- | break a list into sliding windows of a given size
+slidingWindow :: Int -> [a] -> [[a]]
+slidingWindow k xs
+  | k <= n = take (n-k+1) $ map (take k) (tails xs)
+  | otherwise = [xs]
+  where n = length xs
 
 
 -- | Send DeepL API request
--- implements an exponential backoff in case of too many requests
-sendTranslationRequest :: Config -> Text -> IO Text
-sendTranslationRequest conf text = send 10 
+-- implements an exponential back-off when we get
+-- a TooManyRequests reply from the server
+sendTranslationRequest :: Config -> DeepLRequest -> IO Text
+sendTranslationRequest conf req = send 10 
   where
-    request = prepareRequest conf text
+    request = prepareRequest conf req
     send :: Int -> IO Text
     send delay = httpLBS request >>= continue delay
     continue :: Int -> Response L.ByteString -> IO Text
     continue delay response 
       | status == ok200
-      , Just (TranslationResponse (t:_)) <- decode (getResponseBody response)
+      , Just (DeepLResponse (t:_)) <- decode (getResponseBody response)
       = return (translationText t)
       | status == tooManyRequests429 = do
           when (conf.verbosity >= 2) $ do
@@ -112,15 +135,15 @@ sendTranslationRequest conf text = send 10
       | otherwise = throwIO $ userError (show status)
       where status = getResponseStatus response 
 
-prepareRequest :: Config -> Text -> Request
-prepareRequest conf text =
+prepareRequest :: Config -> DeepLRequest -> Request
+prepareRequest conf req =
   let requestBody
-        = object (maybe [] (\lang -> ["source_lang" .=  lang]) conf.sourceLang
-                  ++
-                  [ "target_lang" .= conf.targetLang
-                  , "text" .= [text]
-                  , "preserve_formatting" .= True
-                  ])
+        = objectNoNulls [ "target_lang" .= conf.targetLang
+                        , "source_lang" .= conf.sourceLang
+                        , "text" .= [req.source]
+                        , "context" .= req.context
+                        , "preserve_formatting" .= True
+                        ]
     in setRequestMethod "POST"
          $ setRequestSecure True
          $ setRequestHeader "Authorization"
@@ -128,3 +151,7 @@ prepareRequest conf text =
          $ setRequestHeader "Content-Type" ["application/json"]
          $ setRequestBodyJSON requestBody
          $ parseRequest_ conf.deeplAPIURL
+
+
+objectNoNulls :: [Pair] -> Value
+objectNoNulls = object . filter (\(_,v) -> v/=Null)
